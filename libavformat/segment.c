@@ -74,6 +74,7 @@ typedef struct SegmentContext {
     int segment_idx_wrap;  ///< number after which the index wraps
     int segment_idx_wrap_nb;  ///< number of time the index has wraped
     int segment_count;     ///< number of segment files already written
+    char *segment_exec;
     const AVOutputFormat *oformat;
     AVFormatContext *avf;
     char *format;              ///< format to use for output segment files
@@ -349,6 +350,7 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
     SegmentContext *seg = s->priv_data;
     AVFormatContext *oc = seg->avf;
     int ret = 0;
+    int ret_code = 0; ///< return code for segment_exec
     AVTimecode tc;
     AVRational rate;
     AVDictionaryEntry *tcr;
@@ -452,6 +454,15 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
 
 end:
     ff_format_io_close(oc, &oc->pb);
+
+    if (seg->segment_exec) {
+        char command[1024];
+        snprintf(command, sizeof(command), "%s %s", seg->segment_exec, "&"); // You can pass arguments here if needed
+        ret_code = system(command);
+        if (ret_code != 0) {
+            av_log(s, AV_LOG_ERROR, "Error executing segment_exec command\n");
+        }
+    }
 
     return ret;
 }
@@ -1037,6 +1048,7 @@ static const AVOption options[] = {
     { "reference_stream",  "set reference stream", OFFSET(reference_stream_specifier), AV_OPT_TYPE_STRING, {.str = "auto"}, 0, 0, E },
     { "segment_format",    "set container format used for the segments", OFFSET(format),  AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       E },
     { "segment_format_options", "set list of options for the container format used for the segments", OFFSET(format_options), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, E },
+    { "segment_exec", "Command to execute after segment creation", OFFSET(segment_exec), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, E },
     { "segment_list",      "set the segment list filename",              OFFSET(list),    AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       E },
     { "segment_header_filename", "write a single file containing the header", OFFSET(header_filename), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, E },
 
