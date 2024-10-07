@@ -236,6 +236,59 @@ static int segment_start(AVFormatContext *s, int write_header)
     AVFormatContext *oc = seg->avf;
     int err = 0;
 
+    time_t rawtime;
+    struct tm timeinfo_struct;
+    struct tm *timeinfo;
+    char date_buffer[11];     // For date: YYYY-MM-DD
+    char time_buffer[9];      // For time: HH:MM:SS
+    double segment_duration_seconds;
+    time_t end_rawtime;
+    struct tm end_timeinfo_struct;
+    struct tm *end_timeinfo;
+    char end_date_buffer[11]; // For end date: YYYY-MM-DD
+    char end_time_buffer[9];  // For end time: HH:MM:SS
+
+    // Now you can proceed with your code
+
+    // Initialize rawtime with the current time
+    time(&rawtime);
+
+    // Convert to local time
+    localtime_r(&rawtime, &timeinfo_struct);
+    timeinfo = &timeinfo_struct;
+
+    // Format date and time separately
+    strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", timeinfo);
+    strftime(time_buffer, sizeof(time_buffer), "%H:%M:%S", timeinfo);
+
+    // Set START_DATE and START_TIME metadata
+    av_dict_set(&s->metadata, "START_DATE", date_buffer, 0);
+    av_dict_set(&oc->metadata, "START_DATE", date_buffer, 0);
+
+    av_dict_set(&s->metadata, "START_TIME", time_buffer, 0);
+    av_dict_set(&oc->metadata, "START_TIME", time_buffer, 0);
+
+    // Determine the segment duration in seconds
+    segment_duration_seconds = (double)seg->time / AV_TIME_BASE;
+
+    // Calculate END_TIME
+    end_rawtime = rawtime + (time_t)(segment_duration_seconds);
+
+    // Convert end_rawtime to local time
+    localtime_r(&end_rawtime, &end_timeinfo_struct);
+    end_timeinfo = &end_timeinfo_struct;
+
+    // Format end date and time separately
+    strftime(end_date_buffer, sizeof(end_date_buffer), "%Y-%m-%d", end_timeinfo);
+    strftime(end_time_buffer, sizeof(end_time_buffer), "%H:%M:%S", end_timeinfo);
+
+    // Set END_DATE and END_TIME metadata
+    av_dict_set(&s->metadata, "END_DATE", end_date_buffer, 0);
+    av_dict_set(&oc->metadata, "END_DATE", end_date_buffer, 0);
+
+    av_dict_set(&s->metadata, "END_TIME", end_time_buffer, 0);
+    av_dict_set(&oc->metadata, "END_TIME", end_time_buffer, 0);
+
     if (write_header) {
         avformat_free_context(oc);
         seg->avf = NULL;
@@ -457,7 +510,34 @@ end:
 
     if (seg->segment_exec) {
         char command[1024];
-        snprintf(command, sizeof(command), "%s %s", seg->segment_exec, "&"); // You can pass arguments here if needed
+        const char *filename = oc->url;  // Get the segment filename
+        const char *exec_template = seg->segment_exec;
+    
+        // Replace %f with the filename
+        char *placeholder = strstr(exec_template, "%f");
+        if (placeholder) {
+            // Calculate lengths
+            size_t prefix_len = placeholder - exec_template;
+            size_t filename_len = strlen(filename);
+            size_t suffix_len = strlen(placeholder + 2); // +2 to skip '%f'
+    
+            // Ensure command buffer is large enough
+            if (prefix_len + filename_len + suffix_len + 1 > sizeof(command)) {
+                av_log(s, AV_LOG_ERROR, "Command too long\n");
+                return AVERROR(ENOMEM);
+            }
+    
+            // Construct the command
+            memcpy(command, exec_template, prefix_len);
+            snprintf(command + prefix_len, sizeof(command) - prefix_len, "'%s'", filename);
+            strcpy(command + prefix_len + filename_len + 2, placeholder + 2);
+        } else {
+            snprintf(command, sizeof(command), "%s '%s'", exec_template, filename);
+        }
+    
+        // Optionally add '&' to run in the background
+        strncat(command, " &", sizeof(command) - strlen(command) - 1);
+    
         ret_code = system(command);
         if (ret_code != 0) {
             av_log(s, AV_LOG_ERROR, "Error executing segment_exec command\n");
