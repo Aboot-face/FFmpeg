@@ -74,7 +74,8 @@ typedef struct SegmentContext {
     int segment_idx_wrap;  ///< number after which the index wraps
     int segment_idx_wrap_nb;  ///< number of time the index has wraped
     int segment_count;     ///< number of segment files already written
-    char *segment_exec;
+    char *post_segment_exec;
+    char *pre_segment_exec;
     const AVOutputFormat *oformat;
     AVFormatContext *avf;
     char *format;              ///< format to use for output segment files
@@ -235,59 +236,43 @@ static int segment_start(AVFormatContext *s, int write_header)
     SegmentContext *seg = s->priv_data;
     AVFormatContext *oc = seg->avf;
     int err = 0;
+    int ret_code = 0; ///< return code for pre_segment_exec
 
-    time_t rawtime;
-    struct tm timeinfo_struct;
-    struct tm *timeinfo;
-    char date_buffer[11];     // For date: YYYY-MM-DD
-    char time_buffer[9];      // For time: HH:MM:SS
-    double segment_duration_seconds;
-    time_t end_rawtime;
-    struct tm end_timeinfo_struct;
-    struct tm *end_timeinfo;
-    char end_date_buffer[11]; // For end date: YYYY-MM-DD
-    char end_time_buffer[9];  // For end time: HH:MM:SS
-
-    // Now you can proceed with your code
-
-    // Initialize rawtime with the current time
-    time(&rawtime);
-
-    // Convert to local time
-    localtime_r(&rawtime, &timeinfo_struct);
-    timeinfo = &timeinfo_struct;
-
-    // Format date and time separately
-    strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", timeinfo);
-    strftime(time_buffer, sizeof(time_buffer), "%H:%M:%S", timeinfo);
-
-    // Set START_DATE and START_TIME metadata
-    av_dict_set(&s->metadata, "START_DATE", date_buffer, 0);
-    av_dict_set(&oc->metadata, "START_DATE", date_buffer, 0);
-
-    av_dict_set(&s->metadata, "START_TIME", time_buffer, 0);
-    av_dict_set(&oc->metadata, "START_TIME", time_buffer, 0);
-
-    // Determine the segment duration in seconds
-    segment_duration_seconds = (double)seg->time / AV_TIME_BASE;
-
-    // Calculate END_TIME
-    end_rawtime = rawtime + (time_t)(segment_duration_seconds);
-
-    // Convert end_rawtime to local time
-    localtime_r(&end_rawtime, &end_timeinfo_struct);
-    end_timeinfo = &end_timeinfo_struct;
-
-    // Format end date and time separately
-    strftime(end_date_buffer, sizeof(end_date_buffer), "%Y-%m-%d", end_timeinfo);
-    strftime(end_time_buffer, sizeof(end_time_buffer), "%H:%M:%S", end_timeinfo);
-
-    // Set END_DATE and END_TIME metadata
-    av_dict_set(&s->metadata, "END_DATE", end_date_buffer, 0);
-    av_dict_set(&oc->metadata, "END_DATE", end_date_buffer, 0);
-
-    av_dict_set(&s->metadata, "END_TIME", end_time_buffer, 0);
-    av_dict_set(&oc->metadata, "END_TIME", end_time_buffer, 0);
+    if (seg->pre_segment_exec) {
+        char command[1024];
+        const char *filename = oc->url;  // Get the segment filename
+        const char *exec_template = seg->pre_segment_exec;
+    
+        // Replace %f with the filename
+        char *placeholder = strstr(exec_template, "%f");
+        if (placeholder) {
+            // Calculate lengths
+            size_t prefix_len = placeholder - exec_template;
+            size_t filename_len = strlen(filename);
+            size_t suffix_len = strlen(placeholder + 2); // +2 to skip '%f'
+    
+            // Ensure command buffer is large enough
+            if (prefix_len + filename_len + suffix_len + 1 > sizeof(command)) {
+                av_log(s, AV_LOG_ERROR, "Command too long\n");
+                return AVERROR(ENOMEM);
+            }
+    
+            // Construct the command
+            memcpy(command, exec_template, prefix_len);
+            snprintf(command + prefix_len, sizeof(command) - prefix_len, "'%s'", filename);
+            strcpy(command + prefix_len + filename_len + 2, placeholder + 2);
+        } else {
+            snprintf(command, sizeof(command), "%s '%s'", exec_template, filename);
+        }
+    
+        // Optionally add '&' to run in the background
+        strncat(command, " &", sizeof(command) - strlen(command) - 1);
+    
+        ret_code = system(command);
+        if (ret_code != 0) {
+            av_log(s, AV_LOG_ERROR, "Error executing pre_segment_exec command\n");
+        }
+    }
 
     if (write_header) {
         avformat_free_context(oc);
@@ -508,10 +493,10 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
 end:
     ff_format_io_close(oc, &oc->pb);
 
-    if (seg->segment_exec) {
+    if (seg->post_segment_exec) {
         char command[1024];
         const char *filename = oc->url;  // Get the segment filename
-        const char *exec_template = seg->segment_exec;
+        const char *exec_template = seg->post_segment_exec;
     
         // Replace %f with the filename
         char *placeholder = strstr(exec_template, "%f");
@@ -540,7 +525,7 @@ end:
     
         ret_code = system(command);
         if (ret_code != 0) {
-            av_log(s, AV_LOG_ERROR, "Error executing segment_exec command\n");
+            av_log(s, AV_LOG_ERROR, "Error executing post_segment_exec command\n");
         }
     }
 
@@ -1128,7 +1113,8 @@ static const AVOption options[] = {
     { "reference_stream",  "set reference stream", OFFSET(reference_stream_specifier), AV_OPT_TYPE_STRING, {.str = "auto"}, 0, 0, E },
     { "segment_format",    "set container format used for the segments", OFFSET(format),  AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       E },
     { "segment_format_options", "set list of options for the container format used for the segments", OFFSET(format_options), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, E },
-    { "segment_exec", "Command to execute after segment creation", OFFSET(segment_exec), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, E },
+    { "post_segment_exec", "Command to execute after segment creation", OFFSET(post_segment_exec), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, E },
+    { "pre_segment_exec", "Command to execute before segment creation", OFFSET(pre_segment_exec), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, E },
     { "segment_list",      "set the segment list filename",              OFFSET(list),    AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       E },
     { "segment_header_filename", "write a single file containing the header", OFFSET(header_filename), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, E },
 
