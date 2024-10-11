@@ -147,6 +147,62 @@ static void print_csv_escaped_str(AVIOContext *ctx, const char *str)
         avio_w8(ctx, '"');
 }
 
+static int execute_segment_exec(const char *exec_template, const char *filename, AVFormatContext *s) {
+    char temp_command[2048];       // Intermediate command with %f substituted
+    char expanded_command[4096];   // Final command after strftime expansion
+    time_t now;
+    struct tm *tm_info;
+    size_t command_len;
+
+    // Substitute %f with the filename
+    const char *placeholder = strstr(exec_template, "%f");
+    if (placeholder) {
+        size_t prefix_len = placeholder - exec_template;
+        size_t filename_len = strlen(filename);
+        size_t suffix_len = strlen(placeholder + 2); // +2 to skip '%f'
+
+        if (prefix_len + filename_len + suffix_len + 1 > sizeof(temp_command)) {
+            av_log(s, AV_LOG_ERROR, "Command too long after filename substitution\n");
+            return AVERROR(ENOMEM);
+        }
+
+        memcpy(temp_command, exec_template, prefix_len);
+        memcpy(temp_command + prefix_len, filename, filename_len);
+        strcpy(temp_command + prefix_len + filename_len, placeholder + 2);
+    } else {
+        av_strlcpy(temp_command, exec_template, sizeof(temp_command));
+    }
+
+    // Get current time
+    time(&now);
+    tm_info = localtime(&now);
+
+    // Perform strftime substitution
+    command_len = strftime(expanded_command, sizeof(expanded_command), temp_command, tm_info);
+    if (command_len == 0) {
+        av_log(s, AV_LOG_ERROR, "Failed to expand command with strftime\n");
+        return AVERROR(EINVAL);
+    }
+
+    // Optionally add '&' to run in the background
+    if (strlen(expanded_command) + 2 < sizeof(expanded_command)) {
+        strcat(expanded_command, " &");
+    } else {
+        av_log(s, AV_LOG_ERROR, "Expanded command too long after adding '&'\n");
+        return AVERROR(ENOMEM);
+    }
+
+    // Execute the command
+    int ret_code = system(expanded_command);
+    if (ret_code != 0) {
+        av_log(s, AV_LOG_ERROR, "Error executing segment_exec command: %s\n", strerror(errno));
+        return ret_code;
+    }
+
+    return 0;
+}
+
+
 static int segment_mux_init(AVFormatContext *s)
 {
     SegmentContext *seg = s->priv_data;
@@ -236,40 +292,12 @@ static int segment_start(AVFormatContext *s, int write_header)
     SegmentContext *seg = s->priv_data;
     AVFormatContext *oc = seg->avf;
     int err = 0;
-    int ret_code = 0; ///< return code for pre_segment_exec
 
     if (seg->pre_segment_exec) {
-        char command[1024];
         const char *filename = oc->url;  // Get the segment filename
-        const char *exec_template = seg->pre_segment_exec;
-    
-        // Replace %f with the filename
-        char *placeholder = strstr(exec_template, "%f");
-        if (placeholder) {
-            // Calculate lengths
-            size_t prefix_len = placeholder - exec_template;
-            size_t filename_len = strlen(filename);
-            size_t suffix_len = strlen(placeholder + 2); // +2 to skip '%f'
-    
-            // Ensure command buffer is large enough
-            if (prefix_len + filename_len + suffix_len + 1 > sizeof(command)) {
-                av_log(s, AV_LOG_ERROR, "Command too long\n");
-                return AVERROR(ENOMEM);
-            }
-    
-            // Construct the command
-            memcpy(command, exec_template, prefix_len);
-            snprintf(command + prefix_len, sizeof(command) - prefix_len, "'%s'", filename);
-            strcpy(command + prefix_len + filename_len + 2, placeholder + 2);
-        } else {
-            snprintf(command, sizeof(command), "%s '%s'", exec_template, filename);
-        }
-    
-        // Optionally add '&' to run in the background
-        strncat(command, " &", sizeof(command) - strlen(command) - 1);
-    
-        ret_code = system(command);
-        if (ret_code != 0) {
+
+        int ret_code_pre = execute_segment_exec(seg->pre_segment_exec, filename, s);
+        if (ret_code_pre != 0) {
             av_log(s, AV_LOG_ERROR, "Error executing pre_segment_exec command\n");
         }
     }
@@ -388,7 +416,6 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
     SegmentContext *seg = s->priv_data;
     AVFormatContext *oc = seg->avf;
     int ret = 0;
-    int ret_code = 0; ///< return code for segment_exec
     AVTimecode tc;
     AVRational rate;
     AVDictionaryEntry *tcr;
@@ -494,38 +521,12 @@ end:
     ff_format_io_close(oc, &oc->pb);
 
     if (seg->post_segment_exec) {
-        char command[1024];
         const char *filename = oc->url;  // Get the segment filename
-        const char *exec_template = seg->post_segment_exec;
-    
-        // Replace %f with the filename
-        char *placeholder = strstr(exec_template, "%f");
-        if (placeholder) {
-            // Calculate lengths
-            size_t prefix_len = placeholder - exec_template;
-            size_t filename_len = strlen(filename);
-            size_t suffix_len = strlen(placeholder + 2); // +2 to skip '%f'
-    
-            // Ensure command buffer is large enough
-            if (prefix_len + filename_len + suffix_len + 1 > sizeof(command)) {
-                av_log(s, AV_LOG_ERROR, "Command too long\n");
-                return AVERROR(ENOMEM);
-            }
-    
-            // Construct the command
-            memcpy(command, exec_template, prefix_len);
-            snprintf(command + prefix_len, sizeof(command) - prefix_len, "'%s'", filename);
-            strcpy(command + prefix_len + filename_len + 2, placeholder + 2);
-        } else {
-            snprintf(command, sizeof(command), "%s '%s'", exec_template, filename);
-        }
-    
-        // Optionally add '&' to run in the background
-        strncat(command, " &", sizeof(command) - strlen(command) - 1);
-    
-        ret_code = system(command);
-        if (ret_code != 0) {
+
+        int ret_code_post = execute_segment_exec(seg->post_segment_exec, filename, s);
+        if (ret_code_post != 0) {
             av_log(s, AV_LOG_ERROR, "Error executing post_segment_exec command\n");
+            // Handle error if necessary
         }
     }
 
