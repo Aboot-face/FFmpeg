@@ -210,15 +210,6 @@ static int segment_mux_init(AVFormatContext *s)
     int i;
     int ret;
 
-    if (seg->pre_segment_exec) {
-        const char *filename = oc->url;
-
-        int ret_code_pre = execute_segment_exec(seg->pre_segment_exec, filename, s);
-        if (ret_code_pre != 0) {
-            av_log(s, AV_LOG_ERROR, "Error executing pre_segment_exec command\n");
-        }
-    }
-
     ret = avformat_alloc_output_context2(&seg->avf, seg->oformat, NULL, NULL);
     if (ret < 0)
         return ret;
@@ -293,15 +284,6 @@ static int set_segment_filename(AVFormatContext *s)
              seg->entry_prefix ? seg->entry_prefix : "",
              av_basename(oc->url));
 
-    return 0;
-}
-
-static int segment_start(AVFormatContext *s, int write_header)
-{
-    SegmentContext *seg = s->priv_data;
-    AVFormatContext *oc = seg->avf;
-    int err = 0;
-
     if (seg->pre_segment_exec) {
         const char *filename = oc->url;
 
@@ -310,6 +292,16 @@ static int segment_start(AVFormatContext *s, int write_header)
             av_log(s, AV_LOG_ERROR, "Error executing pre_segment_exec command\n");
         }
     }
+
+
+    return 0;
+}
+
+static int segment_start(AVFormatContext *s, int write_header)
+{
+    SegmentContext *seg = s->priv_data;
+    AVFormatContext *oc = seg->avf;
+    int err = 0;
 
     if (write_header) {
         avformat_free_context(oc);
