@@ -424,6 +424,16 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
     int i;
     int err;
 
+    if (seg->post_segment_exec) {
+        const char *filename = oc->url;  // Get the segment filename
+
+        int ret_code_post = execute_segment_exec(seg->post_segment_exec, filename, s);
+        if (ret_code_post != 0) {
+            av_log(s, AV_LOG_ERROR, "Error executing post_segment_exec command\n");
+            // Handle error if necessary
+        }
+    }
+
     if (!oc || !oc->pb)
         return AVERROR(EINVAL);
 
@@ -520,16 +530,6 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
 
 end:
     ff_format_io_close(oc, &oc->pb);
-
-    if (seg->post_segment_exec) {
-        const char *filename = oc->url;  // Get the segment filename
-
-        int ret_code_post = execute_segment_exec(seg->post_segment_exec, filename, s);
-        if (ret_code_post != 0) {
-            av_log(s, AV_LOG_ERROR, "Error executing post_segment_exec command\n");
-            // Handle error if necessary
-        }
-    }
 
     return ret;
 }
